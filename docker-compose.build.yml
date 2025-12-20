@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    image: puckintel_backend:latest
+
+  frontend:
+    build: ./frontend
+    image: puckintel_frontend:latest

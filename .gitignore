@@ -1,0 +1,30 @@
+# Environments
+.env
+.venv
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Dependencies
+node_modules/
+backend/venv/
+
+# Local Node.js
+nodejs/
+
+# Databases
+*.db
+backend/fantasy_pool.db
+
+# Build outputs
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
