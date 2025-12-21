@@ -6,13 +6,14 @@ services:
     container_name: puckintel_backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     environment:
       - DATABASE_URL=postgresql://puckuser:puckpass@db:5432/puckintel
       - LEAGUE_ID=${LEAGUE_ID}
       - SWID=${SWID}
       - ESPN_S2=${ESPN_S2}
       - LEAGUE_YEAR=${LEAGUE_YEAR:-2025}
+      - PORT=8000
     depends_on:
       db:
         condition: service_healthy
