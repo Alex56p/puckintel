@@ -3,7 +3,7 @@ uvicorn[standard]==0.27.0
 sqlalchemy==2.0.25
 psycopg2-binary==2.9.9
 
-espn-api-v3
+espn_api
 pandas==2.2.0
 apscheduler==3.10.4
 requests==2.31.0
