@@ -8,7 +8,7 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     environment:
-      - DATABASE_URL=postgresql://puckuser:puckpass@db:5432/puckintel
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-puckuser}:${POSTGRES_PASSWORD:-puckpass}@db:5432/${POSTGRES_DB:-puckintel}
       - LEAGUE_ID=${LEAGUE_ID}
       - SWID=${SWID}
       - ESPN_S2=${ESPN_S2}
@@ -34,11 +34,11 @@ services:
     container_name: puckintel_db
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=puckuser
-      - POSTGRES_PASSWORD=puckpass
-      - POSTGRES_DB=puckintel
+      - POSTGRES_USER=${POSTGRES_USER:-puckuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-puckpass}
+      - POSTGRES_DB=${POSTGRES_DB:-puckintel}
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U puckuser -d puckintel" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-puckuser} -d ${POSTGRES_DB:-puckintel}" ]
       interval: 5s
       timeout: 5s
       retries: 5
