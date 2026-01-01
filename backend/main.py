@@ -42,6 +42,7 @@ def _upsert_player(db, p, scoring_map, injury_map={}, ownership_map={}, team_id=
         if not db_p:
             db_p = models.Player(id=p.playerId)
             db.add(db_p)
+            db.flush()
         
         db_p.fullName = p.name
         db_p.position = p.position 

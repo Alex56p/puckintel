@@ -6,7 +6,7 @@ services:
     container_name: puckintel_backend
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${HOST_BACKEND_PORT:-8001}:8000"
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-puckuser}:${POSTGRES_PASSWORD:-puckpass}@db:5432/${POSTGRES_DB:-puckintel}
       - LEAGUE_ID=${LEAGUE_ID}
@@ -23,9 +23,9 @@ services:
     container_name: puckintel_frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "5174:80"
     environment:
-      - BACKEND_PORT=${BACKEND_PORT:-8000}
+      - BACKEND_PORT=8000
     depends_on:
       - backend
 
