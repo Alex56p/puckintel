@@ -18,6 +18,7 @@ class Player(Base):
     salary = Column(String) # Current annual salary from PuckPedia
     salary_value = Column(Float) # Numeric salary for sorting
     contract_years = Column(String) # Years remaining
+    lineup_slot = Column(String) # Current lineup slot from ESPN (e.g. 'BE', 'C', 'LW')
     
     team = relationship("LeagueTeam", back_populates="players")
     
@@ -63,6 +64,8 @@ class PlayerSnapshot(Base):
     player_id = Column(Integer, ForeignKey("players.id"))
     date = Column(DateTime, default=datetime.datetime.utcnow) # Actual time of snap
     day = Column(String) # YYYY-MM-DD for easier querying
+    lineup_slot = Column(String) # Lineup slot at time of snapshot
+
     
     total_points = Column(Float)
     goals = Column(Float, default=0.0)

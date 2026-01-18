@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   backend:
+    build: ./backend
     image: puckintel_backend:latest
     container_name: puckintel_backend
     restart: unless-stopped
@@ -19,6 +20,7 @@ services:
         condition: service_healthy
 
   frontend:
+    build: ./frontend
     image: puckintel_frontend:latest
     container_name: puckintel_frontend
     restart: unless-stopped

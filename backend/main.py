@@ -15,9 +15,6 @@ import models
 from fantasy_client import FantasyClient
 from scrapers import fetch_cbs_injuries
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(title="Fantasy NHL Pool Manager")
 
 # CORS
@@ -31,6 +28,32 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def ensure_schema_updates():
+    """Run manual schema updates for columns added after initial creation"""
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS lineup_slot VARCHAR"))
+            conn.execute(text("ALTER TABLE player_snapshots ADD COLUMN IF NOT EXISTS lineup_slot VARCHAR"))
+            
+            # Salary Support
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS salary VARCHAR"))
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS salary_value FLOAT"))
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS contract_years VARCHAR"))
+            
+            conn.execute(text("ALTER TABLE player_snapshots ADD COLUMN IF NOT EXISTS salary VARCHAR"))
+            conn.execute(text("ALTER TABLE player_snapshots ADD COLUMN IF NOT EXISTS salary_value FLOAT"))
+            conn.execute(text("ALTER TABLE player_snapshots ADD COLUMN IF NOT EXISTS contract_years VARCHAR"))
+            
+            conn.commit()
+            logger.info("Schema updates checked/applied")
+    except Exception as e:
+        logger.error(f"Error checking schema updates: {e}")
+
+# Create tables
+Base.metadata.create_all(bind=engine)
+ensure_schema_updates()
 
 # Scheduler
 scheduler = BackgroundScheduler()
@@ -52,6 +75,7 @@ def _upsert_player(db, p, scoring_map, injury_map={}, ownership_map={}, team_id=
         # Use map if available, fallback to getattr
         db_p.ownership = ownership_map.get(p.playerId, getattr(p, 'percentOwned', 0))
         db_p.team_id = team_id
+        db_p.lineup_slot = getattr(p, 'lineupSlot', 'BE') # Default to bench if not found, though usually 'BE' is explicit
         
         # Extract stats
         current_year = 2026 
@@ -69,7 +93,8 @@ def _upsert_player(db, p, scoring_map, injury_map={}, ownership_map={}, team_id=
         db_p.shp = stats_dict.get('SHP', 0)
         db_p.sog = stats_dict.get('SOG', 0)
         db_p.hits = stats_dict.get('HIT', 0)
-        db_p.blocks = stats_dict.get('BLK', 0)
+        # BLK Fix: Check for both 'BLK' (mapped) and '32' (raw ID)
+        db_p.blocks = stats_dict.get('BLK', stats_dict.get('32', 0))
         db_p.plus_minus = stats_dict.get('+/-', 0)
 
         # Fantasy Points: Calculate dynamically based on league settings
@@ -106,6 +131,7 @@ def _upsert_player(db, p, scoring_map, injury_map={}, ownership_map={}, team_id=
             db.add(snap)
         
         snap.date = datetime.datetime.utcnow()
+        snap.lineup_slot = db_p.lineup_slot
         snap.total_points = db_p.total_points
         snap.goals = db_p.goals
         snap.assists = db_p.assists
@@ -121,6 +147,23 @@ def _upsert_player(db, p, scoring_map, injury_map={}, ownership_map={}, team_id=
 
     except Exception as e:
         logger.error(f"Error upserting player {p.name}: {e}")
+
+# Global Settings State
+LEAGUE_SETTINGS = {
+    "score_sync_interval": 5, # minutes
+    "salary_sync_frequency": "weekly", # weekly or manual
+    "salary_cap": 72.0 # Million USD
+}
+
+def sync_salaries():
+    """Wrapper for salary sync using app engine"""
+    from sync_puckpedia import sync as run_salary_sync
+    logger.info("Starting salary sync...")
+    try:
+        run_salary_sync(existing_engine=engine)
+        logger.info("Salary sync completed.")
+    except Exception as e:
+        logger.error(f"Salary sync failed: {e}")
 
 def sync_data():
     logger.info("Starting background sync...")
@@ -218,8 +261,13 @@ def sync_data():
 
 @app.on_event("startup")
 def start_scheduler():
-    scheduler.add_job(sync_data, 'interval', minutes=5)
+    # Main Data Sync (Default 5 mins)
+    scheduler.add_job(sync_data, 'interval', minutes=LEAGUE_SETTINGS['score_sync_interval'], id='sync_job', replace_existing=True)
     scheduler.add_job(sync_data) # Run once on startup
+    
+    # Salary Sync (Weekly on Sunday at 4AM)
+    scheduler.add_job(sync_salaries, 'cron', day_of_week='sun', hour=4, id='salary_job')
+    
     scheduler.start()
 
 @app.get("/api/health")
@@ -285,6 +333,36 @@ def get_teams_history(db: Session = Depends(get_db)):
         history_dict[s.day][team_name] = s.points
         
     return sorted(list(history_dict.values()), key=lambda x: x['day'])
+
+@app.get("/api/settings")
+def get_settings():
+    return LEAGUE_SETTINGS
+
+from pydantic import BaseModel
+class SettingsUpdate(BaseModel):
+    score_sync_interval: int
+    salary_sync_frequency: str
+    salary_cap: float
+
+@app.post("/api/settings")
+def update_settings(settings: SettingsUpdate):
+    LEAGUE_SETTINGS['score_sync_interval'] = settings.score_sync_interval
+    LEAGUE_SETTINGS['salary_sync_frequency'] = settings.salary_sync_frequency
+    LEAGUE_SETTINGS['salary_cap'] = settings.salary_cap
+    
+    # Reschedule jobs
+    try:
+        scheduler.reschedule_job('sync_job', trigger='interval', minutes=settings.score_sync_interval)
+        logger.info(f"Rescheduled sync job to {settings.score_sync_interval} minutes")
+    except Exception as e:
+        logger.error(f"Failed to reschedule job: {e}")
+        
+    return {"message": "Settings updated", "settings": LEAGUE_SETTINGS}
+
+@app.post("/api/sync/salaries")
+def trigger_salary_sync():
+    scheduler.add_job(sync_salaries)
+    return {"message": "Salary sync triggered"}
 
 @app.get("/api/settings/scoring")
 def get_scoring_settings():

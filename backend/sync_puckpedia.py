@@ -185,45 +185,62 @@ SALARY_DATA = {
     "Matthew Schaefer": ("$975,000", "2028"),
 }
 
-def sync():
-    # Use DATABASE_URL from environment, default to local sqlite
-    url = os.getenv("DATABASE_URL", "sqlite:///./backend/fantasy_pool.db")
-    # Fix for postgres driver if using old style 'postgres://'
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-        
-    engine = create_engine(url)
+def sync(existing_engine=None):
+    # Use provided engine or create new one
+    if existing_engine:
+        engine = existing_engine
+    else:
+        # Use DATABASE_URL from environment, default to local sqlite
+        url = os.getenv("DATABASE_URL", "sqlite:///./backend/fantasy_pool.db")
+        # Fix for postgres driver if using old style 'postgres://'
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        engine = create_engine(url)
     
     count = 0
-    with engine.begin() as conn:
-        for name, (salary_str, expires) in SALARY_DATA.items():
-            salary_val = 0.0
-            try:
-                if salary_str and salary_str != "N/A":
-                    salary_val = float(salary_str.replace("$", "").replace(",", ""))
-            except:
-                pass
-
-            # Update players table
-            res = conn.execute(
-                text("UPDATE players SET salary = :s, salary_value = :sv, contract_years = :c WHERE fullName = :n"),
-                {"s": salary_str, "sv": salary_val, "c": expires, "n": name}
-            )
+    # If existing_engine is passed, we might be inside a transaction or not.
+    # To be safe and simple, we'll just connect. 
+    # If it's the main app's engine, we can use it directly.
+    
+    try:
+        with engine.connect() as conn:
+            # If using an engine that requires explicit transactions (like some Postgres configs), we might need .begin()
+            # But engine.begin() is usually safer.
+            pass
             
-            if res.rowcount > 0:
-                count += 1
-                # Update latest snapshot
-                conn.execute(
-                    text("""
-                        UPDATE player_snapshots 
-                        SET salary = :s, salary_value = :sv, contract_years = :c 
-                        WHERE player_id = (SELECT id FROM players WHERE fullName = :n) 
-                        AND day = (SELECT MAX(day) FROM player_snapshots)
-                    """),
+        with engine.begin() as conn:
+            for name, (salary_str, expires) in SALARY_DATA.items():
+                salary_val = 0.0
+                try:
+                    if salary_str and salary_str != "N/A":
+                        salary_val = float(salary_str.replace("$", "").replace(",", ""))
+                except:
+                    pass
+
+                # Update players table
+                res = conn.execute(
+                    text('UPDATE players SET salary = :s, salary_value = :sv, contract_years = :c WHERE "fullName" = :n'),
                     {"s": salary_str, "sv": salary_val, "c": expires, "n": name}
                 )
+                
+                if res.rowcount > 0:
+                    count += 1
+                    # Update latest snapshot
+                    conn.execute(
+                        text("""
+                            UPDATE player_snapshots 
+                            SET salary = :s, salary_value = :sv, contract_years = :c 
+                            WHERE player_id = (SELECT id FROM players WHERE "fullName" = :n) 
+                            AND day = (SELECT MAX(day) FROM player_snapshots)
+                        """),
+                        {"s": salary_str, "sv": salary_val, "c": expires, "n": name}
+                    )
 
-    print(f"Successfully updated salary data for {count} players.")
+        print(f"Successfully updated salary data for {count} players.")
+    except Exception as e:
+        print(f"Error syncing salaries: {e}")
+        # If we didn't pass an engine, we created it, so maybe dispos? 
+        # But create_engine doesn't need explicit close usually.
 
 if __name__ == "__main__":
     sync()

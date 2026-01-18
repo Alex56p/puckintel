@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, LineChart, Line } from 'recharts';
-import { Crown, Users, TrendingUp, Activity, RefreshCw, ArrowLeft, BarChart2, LayoutDashboard, Search, Home, ClipboardList } from 'lucide-react';
+import { Crown, Users, TrendingUp, Activity, RefreshCw, ArrowLeft, BarChart2, LayoutDashboard, Search, Home, ClipboardList, Settings as SettingsIcon } from 'lucide-react';
 
 function App() {
     const [teams, setTeams] = useState([]);
@@ -17,7 +17,16 @@ function App() {
     const [activeTab, setActiveTab] = useState('dashboard');
     const [loading, setLoading] = useState(true);
     const [syncing, setSyncing] = useState(false);
+    const [showDailyStats, setShowDailyStats] = useState(false);
+    const [settings, setSettings] = useState({ score_sync_interval: 5, salary_sync_frequency: 'weekly', salary_cap: 72.0 });
     const [sortConfig, setSortConfig] = useState({ key: 'total_points', direction: 'desc' });
+
+    const getSlotAbbrev = (slot) => {
+        const map = { 'Forward': 'F', 'Defense': 'D', 'Goalie': 'G', 'Bench': 'BN', 'BE': 'BN' };
+        return map[slot] || slot || 'BN';
+    };
+
+    const isBench = (slot) => slot === 'BE' || slot === 'Bench' || slot === 'BN';
 
     const fetchData = async () => {
         try {
@@ -26,10 +35,12 @@ function App() {
             const faRes = await axios.get('/api/players/free_agents');
             const scoringRes = await axios.get('/api/settings/scoring');
             const historyRes = await axios.get('/api/teams/history');
+            const settingsRes = await axios.get('/api/settings');
             setTeams(teamsRes.data);
             setFreeAgents(faRes.data);
             setScoringRules(scoringRes.data);
             setHistory(historyRes.data);
+            setSettings(settingsRes.data);
         } catch (error) {
             console.error("Error fetching data", error);
             if (teams.length === 0) {
@@ -76,12 +87,13 @@ function App() {
         setSelectedTeam(team);
         setSelectedPlayer(null);
         fetchTeamHistory(team.id);
+        pushState({ selectedTeamId: team.id, selectedPlayerId: null });
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handlePlayerClick = async (player) => {
         setSelectedPlayer(player);
-        setSelectedTeam(null);
+        pushState({ selectedPlayerId: player.id });
         try {
             const res = await axios.get(`/api/players/${player.id}/history`);
             setPlayerHistory(res.data);
@@ -120,13 +132,90 @@ function App() {
 
     useEffect(() => {
         fetchData();
-    }, []);
+
+        // Baseline state
+        if (!window.history.state) {
+            window.history.replaceState({ activeTab: 'dashboard', selectedTeamId: null, selectedPlayerId: null }, '');
+        }
+
+        const handlePopState = (event) => {
+            if (event.state) {
+                const { activeTab, selectedTeamId, selectedPlayerId } = event.state;
+                setActiveTab(activeTab || 'dashboard');
+
+                // Restore Team
+                if (selectedTeamId) {
+                    const team = teams.find(t => t.id === selectedTeamId);
+                    if (team) {
+                        setSelectedTeam(team);
+                        fetchTeamHistory(team.id);
+                    }
+                } else {
+                    setSelectedTeam(null);
+                }
+
+                // Restore Player
+                if (selectedPlayerId) {
+                    const player = teams.flatMap(t => t.players || []).find(p => p.id === selectedPlayerId) ||
+                        freeAgents.find(p => p.id === selectedPlayerId);
+                    if (player) {
+                        setSelectedPlayer(player);
+                        axios.get(`/api/players/${player.id}/history`).then(res => setPlayerHistory(res.data));
+                    }
+                } else {
+                    setSelectedPlayer(null);
+                }
+            }
+        };
+
+        window.addEventListener('popstate', handlePopState);
+        return () => window.removeEventListener('popstate', handlePopState);
+    }, [teams, freeAgents]);
+
+    const pushState = (updates) => {
+        const newState = {
+            activeTab,
+            selectedTeamId: selectedTeam?.id,
+            selectedPlayerId: selectedPlayer?.id,
+            ...updates
+        };
+        window.history.pushState(newState, '');
+    };
+
+    const handleTabChange = (tabId) => {
+        setActiveTab(tabId);
+        setSelectedTeam(null);
+        setSelectedPlayer(null);
+        pushState({ activeTab: tabId, selectedTeamId: null, selectedPlayerId: null });
+    };
 
     useEffect(() => {
         if (history.length > 0 && !selectedHistoryDay) {
             setSelectedHistoryDay(history[history.length - 1].day);
         }
     }, [history]);
+
+    const toDailyData = (data, keysToProcess) => {
+        if (!data || data.length < 2) return [];
+        const dailyData = [];
+        for (let i = 1; i < data.length; i++) {
+            const current = data[i];
+            const prev = data[i - 1];
+            const newItem = { ...current };
+
+            // If keysToProcess is provided, only process those keys
+            // Otherwise try to process all numeric keys
+            const keys = keysToProcess || Object.keys(current).filter(k => typeof current[k] === 'number');
+
+            keys.forEach(key => {
+                const currVal = current[key] || 0;
+                const prevVal = prev[key] || 0;
+                newItem[key] = currVal - prevVal;
+            });
+            dailyData.push(newItem);
+        }
+        return dailyData;
+    };
 
     const SortIndicator = ({ columnKey }) => {
         const isActive = sortConfig.key === columnKey;
@@ -140,6 +229,20 @@ function App() {
             }}>
                 {isActive ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
             </span>
+        );
+    };
+
+    const CustomDot = (props) => {
+        const { cx, cy, payload, stroke } = props;
+        const benchStatus = isBench(payload.lineup_slot);
+
+        if (benchStatus) {
+            return (
+                <circle cx={cx} cy={cy} r={4} stroke={stroke} strokeWidth={2} fill="var(--bg-card)" fillOpacity={1} />
+            );
+        }
+        return (
+            <circle cx={cx} cy={cy} r={4} stroke={stroke} strokeWidth={0} fill={stroke} />
         );
     };
 
@@ -172,17 +275,13 @@ function App() {
                     <nav style={{ display: 'flex', gap: '0.5rem', background: 'none', backdropFilter: 'none', border: 'none', position: 'static', padding: 0 }}>
                         {[
                             { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
-                            { id: 'standings', label: 'Standings', icon: Crown },
-                            { id: 'rosters', label: 'Teams', icon: Users },
+                            { id: 'standings', label: 'Teams & Standings', icon: Crown },
                             { id: 'free-agents', label: 'Players', icon: Search },
-                            { id: 'scoring', label: 'Rules', icon: Activity }
+                            { id: 'settings', label: 'Settings', icon: SettingsIcon }
                         ].map(item => (
                             <button
                                 key={item.id}
-                                onClick={() => {
-                                    setActiveTab(item.id);
-                                    setSelectedTeam(null);
-                                }}
+                                onClick={() => handleTabChange(item.id)}
                                 style={{
                                     display: 'flex',
                                     alignItems: 'center',
@@ -233,7 +332,7 @@ function App() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
                             <button
                                 className="btn"
-                                onClick={() => setSelectedPlayer(null)}
+                                onClick={() => window.history.back()}
                                 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.05)' }}
                             >
                                 <ArrowLeft size={18} /> Back
@@ -281,7 +380,18 @@ function App() {
 
                         <div className="card" style={{ marginBottom: '2rem', minHeight: '400px' }}>
                             <div style={{ padding: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <h3 style={{ margin: 0 }}>Stat Progression</h3>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+                                    <h3 style={{ margin: 0 }}>Stat Progression</h3>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={showDailyStats}
+                                            onChange={(e) => setShowDailyStats(e.target.checked)}
+                                            style={{ accentColor: 'var(--accent-primary)' }}
+                                        />
+                                        Show Daily Stats
+                                    </label>
+                                </div>
                                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                                     {['total_points', 'goals', 'assists', 'sog', 'hits', 'blocks'].map(s => (
                                         <button
@@ -305,7 +415,7 @@ function App() {
                             </div>
                             <div style={{ height: '350px', padding: '1.5rem' }}>
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <AreaChart data={playerHistory}>
+                                    <AreaChart data={showDailyStats ? toDailyData(playerHistory, [selectedStat]) : playerHistory}>
                                         <defs>
                                             <linearGradient id="colorStat" x1="0" y1="0" x2="0" y2="1">
                                                 <stop offset="5%" stopColor="var(--accent-primary)" stopOpacity={0.3} />
@@ -392,7 +502,21 @@ function App() {
                                     Rank #{selectedTeam.rank}
                                 </div>
                             </div>
-                            <p style={{ color: 'var(--text-secondary)' }}>Total Fantasy Points: {selectedTeam.points?.toFixed(1)}</p>
+                            <div style={{ display: 'flex', gap: '2rem', color: 'var(--text-secondary)' }}>
+                                <p>Total Fantasy Points: {selectedTeam.points?.toFixed(1)}</p>
+                                {(() => {
+                                    const totalSalary = (selectedTeam.players || []).reduce((sum, p) => sum + (p.salary_value || 0), 0);
+                                    const totalSalaryMillions = totalSalary / 1000000;
+                                    const capSpace = settings.salary_cap - totalSalaryMillions;
+                                    const isOverCap = capSpace < 0;
+                                    return (
+                                        <>
+                                            <p>Total Salary: <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>${totalSalaryMillions.toFixed(2)}M</span></p>
+                                            <p>Cap Space: <span style={{ color: isOverCap ? '#ef4444' : 'var(--success)', fontWeight: 'bold' }}>${capSpace.toFixed(2)}M</span></p>
+                                        </>
+                                    );
+                                })()}
+                            </div>
                         </header>
 
                         <div className="card" style={{ height: '550px', marginBottom: '3rem' }}>
@@ -400,6 +524,15 @@ function App() {
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                                     <TrendingUp color="var(--accent-primary)" />
                                     <h3>Player Performance Analysis</h3>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', marginLeft: '1rem' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={showDailyStats}
+                                            onChange={(e) => setShowDailyStats(e.target.checked)}
+                                            style={{ accentColor: 'var(--accent-primary)' }}
+                                        />
+                                        Show Daily Stats
+                                    </label>
                                 </div>
                                 <div style={{ display: 'flex', gap: '0.5rem', background: 'rgba(255,255,255,0.02)', padding: '0.25rem', borderRadius: '0.5rem', border: '1px solid rgba(255,255,255,0.05)' }}>
                                     {[
@@ -433,7 +566,7 @@ function App() {
                                 Currently viewing: <span style={{ color: 'var(--accent-primary)', fontWeight: 'bold', textTransform: 'uppercase' }}>{selectedStat.replace('_', ' ')}</span>
                             </div>
                             <ResponsiveContainer width="100%" height="80%">
-                                <LineChart data={teamHistory}>
+                                <LineChart data={showDailyStats ? toDailyData(teamHistory) : teamHistory}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                                     <XAxis dataKey="day" stroke="#94a3b8" fontSize={12} />
                                     <YAxis stroke="#94a3b8" fontSize={12} />
@@ -469,40 +602,57 @@ function App() {
                                     <thead>
                                         <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                                             <th style={{ padding: '1rem' }}>Player</th>
+                                            <th style={{ padding: '1rem' }}>Slot</th>
                                             <th style={{ padding: '1rem' }}>Pos</th>
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>Salary</th>
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>G</th>
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>A</th>
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>+/-</th>
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>SOG</th>
+                                            <th style={{ padding: '1rem', textAlign: 'center' }}>BLK</th>
                                             <th style={{ padding: '1rem', textAlign: 'right' }}>Total FPts</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {(selectedTeam.players || []).slice().sort((a, b) => (b.total_points || 0) - (a.total_points || 0)).map(player => (
-                                            <tr key={player.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                                                <td style={{ padding: '1rem' }}>
-                                                    <div
-                                                        onClick={() => handlePlayerClick(player)}
-                                                        style={{ fontWeight: '600', cursor: 'pointer' }}
-                                                        onMouseEnter={(e) => e.currentTarget.style.color = 'var(--accent-primary)'}
-                                                        onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
-                                                    >
-                                                        {player.fullName}
-                                                    </div>
-                                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{player.proTeam}</div>
-                                                </td>
-                                                <td style={{ padding: '1rem' }}>{player.position}</td>
-                                                <td style={{ padding: '1rem', textAlign: 'center', fontSize: '0.8rem', color: 'var(--accent-primary)' }}>{player.salary || 'N/A'}</td>
-                                                <td style={{ padding: '1rem', textAlign: 'center' }}>{player.goals}</td>
-                                                <td style={{ padding: '1rem', textAlign: 'center' }}>{player.assists}</td>
-                                                <td style={{ padding: '1rem', textAlign: 'center' }}>{player.plus_minus}</td>
-                                                <td style={{ padding: '1rem', textAlign: 'center' }}>{player.sog}</td>
-                                                <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--accent-primary)', fontWeight: 'bold' }}>
-                                                    {(player.total_points || 0).toFixed(1)}
-                                                </td>
-                                            </tr>
-                                        ))}
+                                        {(selectedTeam.players || []).slice().sort((a, b) => {
+                                            const isBenchA = isBench(a.lineup_slot);
+                                            const isBenchB = isBench(b.lineup_slot);
+                                            if (isBenchA && !isBenchB) return 1;
+                                            if (!isBenchA && isBenchB) return -1;
+                                            return (b.total_points || 0) - (a.total_points || 0);
+                                        }).map(player => {
+                                            const benchStatus = isBench(player.lineup_slot);
+                                            return (
+                                                <tr key={player.id} style={{
+                                                    borderBottom: '1px solid rgba(255,255,255,0.02)',
+                                                    opacity: benchStatus ? 0.6 : 1,
+                                                    background: benchStatus ? 'rgba(0,0,0,0.1)' : 'transparent'
+                                                }}>
+                                                    <td style={{ padding: '1rem' }}>
+                                                        <div
+                                                            onClick={() => handlePlayerClick(player)}
+                                                            style={{ fontWeight: '600', cursor: 'pointer' }}
+                                                            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--accent-primary)'}
+                                                            onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
+                                                        >
+                                                            {player.fullName}
+                                                        </div>
+                                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{player.proTeam}</div>
+                                                    </td>
+                                                    <td style={{ padding: '1rem', fontSize: '0.85rem', fontWeight: 'bold' }}>{getSlotAbbrev(player.lineup_slot)}</td>
+                                                    <td style={{ padding: '1rem' }}>{player.position}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center', fontSize: '0.8rem', color: 'var(--accent-primary)' }}>{player.salary || 'N/A'}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{player.goals}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{player.assists}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{player.plus_minus}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{player.sog}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{player.blocks}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--accent-primary)', fontWeight: 'bold' }}>
+                                                        {(player.total_points || 0).toFixed(1)}
+                                                    </td>
+                                                </tr>
+                                            )
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
@@ -541,9 +691,18 @@ function App() {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
                                         <TrendingUp color="var(--accent-primary)" />
                                         <h3>Team Points Progression</h3>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', marginLeft: '1rem' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={showDailyStats}
+                                                onChange={(e) => setShowDailyStats(e.target.checked)}
+                                                style={{ accentColor: 'var(--accent-primary)' }}
+                                            />
+                                            Show Daily Stats
+                                        </label>
                                     </div>
                                     <ResponsiveContainer width="100%" height="90%">
-                                        <LineChart data={history}>
+                                        <LineChart data={showDailyStats ? toDailyData(history) : history}>
                                             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                                             <XAxis dataKey="day" stroke="#94a3b8" fontSize={12} />
                                             <YAxis stroke="#94a3b8" fontSize={12} />
@@ -583,6 +742,7 @@ function App() {
                                             <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
                                                 <th style={{ padding: '1rem' }}>Rank</th>
                                                 <th style={{ padding: '1rem' }}>Team</th>
+                                                <th style={{ padding: '1rem', textAlign: 'center' }}>Cap Space</th>
                                                 <th style={{ padding: '1rem', textAlign: 'center' }}>G</th>
                                                 <th style={{ padding: '1rem', textAlign: 'center' }}>A</th>
                                                 <th style={{ padding: '1rem', textAlign: 'center' }}>PPP</th>
@@ -593,21 +753,94 @@ function App() {
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {teams.map(team => (
-                                                <tr key={team.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                                                    <td style={{ padding: '1rem', fontWeight: 'bold' }}>#{team.rank}</td>
-                                                    <td style={{ padding: '1rem' }}>{team.name}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{team.goals || 0}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{team.assists || 0}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{team.ppp || 0}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{team.sog || 0}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{team.hits || 0}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>{team.blocks || 0}</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--accent-primary)', fontWeight: 'bold' }}>{team.points?.toFixed(1)}</td>
-                                                </tr>
-                                            ))}
+                                            {teams.map(team => {
+                                                const totalSalary = (team.players || []).reduce((sum, p) => sum + (p.salary_value || 0), 0) / 1000000;
+                                                const capSpace = settings.salary_cap - totalSalary;
+                                                const isOverCap = capSpace < 0;
+                                                return (
+                                                    <tr key={team.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                                                        <td style={{ padding: '1rem', fontWeight: 'bold' }}>#{team.rank}</td>
+                                                        <td style={{ padding: '1rem' }}>{team.name}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center', color: isOverCap ? '#ef4444' : 'var(--success)', fontWeight: 'bold' }}>${capSpace.toFixed(2)}M</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center' }}>{team.goals || 0}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center' }}>{team.assists || 0}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center' }}>{team.ppp || 0}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center' }}>{team.sog || 0}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center' }}>{team.hits || 0}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'center' }}>{team.blocks || 0}</td>
+                                                        <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--accent-primary)', fontWeight: 'bold' }}>{team.points?.toFixed(1)}</td>
+                                                    </tr>
+                                                );
+                                            })}
                                         </tbody>
                                     </table>
+                                </div>
+
+                                <div style={{ marginTop: '3rem' }}>
+                                    <header style={{ marginBottom: '2rem' }}>
+                                        <h2 style={{ fontSize: '2rem' }}>League Rosters</h2>
+                                    </header>
+                                    <div style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                                        gap: '1.5rem'
+                                    }}>
+                                        {teams.map(team => (
+                                            <div
+                                                key={team.id}
+                                                className="card team-card-clickable"
+                                                style={{
+                                                    padding: '0',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.3s',
+                                                    border: '1px solid rgba(255,255,255,0.05)'
+                                                }}
+                                                onClick={() => handleTeamClick(team)}
+                                            >
+                                                <div style={{ padding: '1.25rem', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}>
+                                                    <div style={{ fontWeight: '700', fontSize: '1.1rem' }}>{team.name}</div>
+                                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Rank #{team.rank} • {team.points?.toFixed(0)} FPts</div>
+                                                </div>
+                                                <div style={{ padding: '0.5rem', maxHeight: '350px', overflowY: 'auto' }}>
+                                                    {team.players?.sort((a, b) => {
+                                                        // Sort by Lineup Slot: Active first, Bench last
+                                                        const isBenchA = isBench(a.lineup_slot);
+                                                        const isBenchB = isBench(b.lineup_slot);
+                                                        if (isBenchA && !isBenchB) return 1;
+                                                        if (!isBenchA && isBenchB) return -1;
+                                                        // Secondary sort by points
+                                                        return b.total_points - a.total_points;
+                                                    }).map(player => {
+                                                        const benchStatus = isBench(player.lineup_slot);
+                                                        return (
+                                                            <div key={player.id} style={{
+                                                                display: 'flex',
+                                                                justifyContent: 'space-between',
+                                                                padding: '0.5rem 0.75rem',
+                                                                opacity: benchStatus ? 0.6 : 1,
+                                                                background: benchStatus ? 'rgba(0,0,0,0.1)' : 'transparent'
+                                                            }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                                    <div style={{
+                                                                        fontSize: '0.7rem',
+                                                                        fontWeight: 'bold',
+                                                                        color: benchStatus ? 'var(--text-secondary)' : 'var(--accent-secondary)',
+                                                                        width: '28px',
+                                                                        textAlign: 'center'
+                                                                    }}>
+                                                                        {getSlotAbbrev(player.lineup_slot)}
+                                                                    </div>
+                                                                    <div style={{ fontSize: '0.85rem' }}>{player.fullName}</div>
+                                                                </div>
+                                                                <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--accent-primary)' }}>{player.total_points?.toFixed(1)}</div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                    <div style={{ padding: '0.75rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--accent-primary)', opacity: 0.7 }}>Click to view full roster</div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
 
                                 <div style={{ marginTop: '3rem', animation: 'fadeIn 0.5s ease-out' }}>
@@ -762,53 +995,73 @@ function App() {
                             </>
                         )}
 
-                        {activeTab === 'rosters' && (
-                            <>
-                                <header style={{ marginBottom: '2rem' }}>
-                                    <h2 style={{ fontSize: '2rem' }}>League Rosters</h2>
-                                </header>
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-                                    gap: '1.5rem'
-                                }}>
-                                    {teams.map(team => (
-                                        <div
-                                            key={team.id}
-                                            className="card team-card-clickable"
-                                            style={{
-                                                padding: '0',
-                                                cursor: 'pointer',
-                                                transition: 'all 0.3s',
-                                                border: '1px solid rgba(255,255,255,0.05)'
-                                            }}
-                                            onClick={() => handleTeamClick(team)}
-                                        >
-                                            <div style={{ padding: '1.25rem', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}>
-                                                <div style={{ fontWeight: '700', fontSize: '1.1rem' }}>{team.name}</div>
-                                                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Rank #{team.rank} • {team.points?.toFixed(0)} FPts</div>
-                                            </div>
-                                            <div style={{ padding: '0.5rem', maxHeight: '350px', overflowY: 'auto' }}>
-                                                {team.players?.sort((a, b) => b.total_points - a.total_points).slice(0, 5).map(player => (
-                                                    <div key={player.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0.75rem' }}>
-                                                        <div style={{ fontSize: '0.85rem' }}>{player.fullName}</div>
-                                                        <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--accent-primary)' }}>{player.total_points?.toFixed(1)}</div>
-                                                    </div>
-                                                ))}
-                                                <div style={{ padding: '0.75rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--accent-primary)', opacity: 0.7 }}>Click to view full roster</div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </>
-                        )}
 
-                        {activeTab === 'scoring' && (
+
+                        {activeTab === 'settings' && (
                             <>
                                 <header style={{ marginBottom: '2rem' }}>
-                                    <h2 style={{ fontSize: '2rem' }}>Scoring Rules</h2>
-                                    <p style={{ color: 'var(--text-secondary)' }}>How fantasy points are calculated for this league</p>
+                                    <h2 style={{ fontSize: '2rem' }}>League Settings</h2>
+                                    <p style={{ color: 'var(--text-secondary)' }}>Manage application configuration and view rules</p>
                                 </header>
+
+                                <div className="card" style={{ padding: '2rem', marginBottom: '2rem' }}>
+                                    <h3 style={{ marginTop: 0, marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <RefreshCw size={20} /> Sync Configuration
+                                    </h3>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Score Sync Interval (Minutes)</label>
+                                            <input
+                                                type="number"
+                                                value={settings.score_sync_interval}
+                                                onChange={(e) => setSettings({ ...settings, score_sync_interval: parseInt(e.target.value) })}
+                                                style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>League Salary Cap ($ Million)</label>
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                value={settings.salary_cap}
+                                                onChange={(e) => setSettings({ ...settings, salary_cap: parseFloat(e.target.value) })}
+                                                style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Salary Sync Frequency</label>
+                                            <select
+                                                value={settings.salary_sync_frequency}
+                                                onChange={(e) => setSettings({ ...settings, salary_sync_frequency: e.target.value })}
+                                                style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                            >
+                                                <option value="daily">Daily</option>
+                                                <option value="weekly">Weekly</option>
+                                                <option value="manual">Manual Only</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div style={{ marginTop: '2rem', display: 'flex', gap: '1rem' }}>
+                                        <button className="btn" onClick={async () => {
+                                            try {
+                                                await axios.post('/api/settings', settings);
+                                                alert('Settings saved!');
+                                            } catch (e) { alert('Error saving settings'); }
+                                        }}>
+                                            Save Configuration
+                                        </button>
+                                        <button className="btn" style={{ background: 'rgba(255,255,255,0.05)' }} onClick={async () => {
+                                            try {
+                                                await axios.post('/api/sync/salaries');
+                                                alert('Salary sync triggered!');
+                                            } catch (e) { alert('Error triggering sync'); }
+                                        }}>
+                                            Force Salary Sync
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <h3 style={{ marginBottom: '1rem' }}>Scoring Rules</h3>
                                 <div className="card" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '1.5rem' }}>
                                     {Object.entries(scoringRules).map(([stat, pts]) => (
                                         <div key={stat} style={{ background: 'rgba(255,255,255,0.03)', padding: '1.5rem', borderRadius: '1rem', textAlign: 'center', border: '1px solid rgba(255,255,255,0.05)' }}>
