@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, LineChart, Line } from 'recharts';
-import { Crown, Users, TrendingUp, Activity, RefreshCw, ArrowLeft, BarChart2, LayoutDashboard, Search, Home, ClipboardList, Settings as SettingsIcon } from 'lucide-react';
+import { Crown, Users, TrendingUp, Activity, RefreshCw, ArrowLeft, BarChart2, LayoutDashboard, Search, Home, ClipboardList, Settings as SettingsIcon, Banknote, Plus, Save, X, Upload } from 'lucide-react';
 
 function App() {
     const [teams, setTeams] = useState([]);
@@ -21,6 +21,17 @@ function App() {
     const [settings, setSettings] = useState({ score_sync_interval: 5, salary_sync_frequency: 'weekly', salary_cap: 72.0 });
     const [sortConfig, setSortConfig] = useState({ key: 'total_points', direction: 'desc' });
 
+    // Salary Feature State
+    const [salaries, setSalaries] = useState([]);
+    const [salarySearch, setSalarySearch] = useState('');
+    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+    const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+    const [currentEditPlayer, setCurrentEditPlayer] = useState(null);
+    const [newPlayer, setNewPlayer] = useState({ fullName: '', team: '', position: 'F', salary: '', contract_years: '0' });
+    const [uploadFile, setUploadFile] = useState(null);
+    const [comparePlayer, setComparePlayer] = useState(null);
+    const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+
     const getSlotAbbrev = (slot) => {
         const map = { 'Forward': 'F', 'Defense': 'D', 'Goalie': 'G', 'Bench': 'BN', 'BE': 'BN' };
         return map[slot] || slot || 'BN';
@@ -36,11 +47,13 @@ function App() {
             const scoringRes = await axios.get('/api/settings/scoring');
             const historyRes = await axios.get('/api/teams/history');
             const settingsRes = await axios.get('/api/settings');
+            const salariesRes = await axios.get('/api/players/salaries');
             setTeams(teamsRes.data);
             setFreeAgents(faRes.data);
             setScoringRules(scoringRes.data);
             setHistory(historyRes.data);
             setSettings(settingsRes.data);
+            setSalaries(salariesRes.data);
         } catch (error) {
             console.error("Error fetching data", error);
             if (teams.length === 0) {
@@ -58,7 +71,11 @@ function App() {
     const triggerSync = async () => {
         try {
             setSyncing(true);
-            await axios.post('/api/sync');
+            // Run both syncs concurrently
+            await Promise.all([
+                axios.post('/api/sync'),
+                axios.post('/api/sync/salaries')
+            ]);
             await fetchData();
         } catch (error) {
             console.error("Error syncing", error);
@@ -246,6 +263,54 @@ function App() {
         );
     };
 
+    const handleUploadSalaries = async () => {
+        if (!uploadFile) return alert("Please select a file first");
+        const formData = new FormData();
+        formData.append("file", uploadFile);
+
+        try {
+            setSyncing(true);
+            const res = await axios.post('/api/settings/upload_salaries', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            alert(res.data.message);
+            fetchData();
+        } catch (error) {
+            console.error(error);
+            alert("Upload failed");
+        } finally {
+            setSyncing(false);
+            setUploadFile(null);
+        }
+    };
+
+    const handleUpdateSalary = async () => {
+        if (!currentEditPlayer) return;
+        try {
+            await axios.put(`/api/players/${currentEditPlayer.id}/salary`, {
+                salary: currentEditPlayer.salary,
+                contract_years: currentEditPlayer.contract_years
+            });
+            setIsEditModalOpen(false);
+            fetchData();
+        } catch (error) {
+            console.error(error);
+            alert("Update failed");
+        }
+    };
+
+    const handleCreatePlayer = async () => {
+        try {
+            await axios.post('/api/players', newPlayer);
+            setIsAddModalOpen(false);
+            setNewPlayer({ fullName: '', team: '', position: 'F', salary: '', contract_years: '0' });
+            fetchData();
+        } catch (error) {
+            console.error(error);
+            alert("Create failed: " + (error.response?.data?.detail || error.message));
+        }
+    };
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
             {/* Top Navigation */}
@@ -277,6 +342,7 @@ function App() {
                             { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
                             { id: 'standings', label: 'Teams & Standings', icon: Crown },
                             { id: 'free-agents', label: 'Players', icon: Search },
+                            { id: 'salaries', label: 'Salaries', icon: Banknote },
                             { id: 'settings', label: 'Settings', icon: SettingsIcon }
                         ].map(item => (
                             <button
@@ -611,6 +677,7 @@ function App() {
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>SOG</th>
                                             <th style={{ padding: '1rem', textAlign: 'center' }}>BLK</th>
                                             <th style={{ padding: '1rem', textAlign: 'right' }}>Total FPts</th>
+                                            <th style={{ padding: '1rem', textAlign: 'center' }}>Action</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -649,6 +716,35 @@ function App() {
                                                     <td style={{ padding: '1rem', textAlign: 'center' }}>{player.blocks}</td>
                                                     <td style={{ padding: '1rem', textAlign: 'right', color: 'var(--accent-primary)', fontWeight: 'bold' }}>
                                                         {(player.total_points || 0).toFixed(1)}
+                                                    </td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>
+                                                        <button
+                                                            onClick={() => {
+                                                                setComparePlayer(player);
+                                                                setIsCompareModalOpen(true);
+                                                            }}
+                                                            style={{
+                                                                background: 'transparent',
+                                                                border: '1px solid rgba(56, 189, 248, 0.3)',
+                                                                color: 'var(--accent-primary)',
+                                                                padding: '0.3rem 0.6rem',
+                                                                borderRadius: '0.3rem',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.75rem',
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: '0.4rem',
+                                                                margin: '0 auto'
+                                                            }}
+                                                            onMouseEnter={(e) => {
+                                                                e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';
+                                                            }}
+                                                            onMouseLeave={(e) => {
+                                                                e.currentTarget.style.background = 'transparent';
+                                                            }}
+                                                        >
+                                                            <BarChart2 size={14} /> Compare FA
+                                                        </button>
                                                     </td>
                                                 </tr>
                                             )
@@ -982,7 +1078,9 @@ function App() {
                                                     </td>
                                                     <td style={{ padding: '1rem', color: 'var(--text-secondary)' }}>{fa.proTeam}</td>
                                                     <td style={{ padding: '1rem', textAlign: 'center' }}>{fa.ownership?.toFixed(1)}%</td>
-                                                    <td style={{ padding: '1rem', textAlign: 'center', fontSize: '0.8rem', color: 'var(--accent-primary)' }}>{fa.salary || 'N/A'}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center', fontSize: '0.8rem', color: 'var(--accent-primary)' }}>
+                                                        {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(fa.salary_value || 0)}
+                                                    </td>
                                                     <td style={{ padding: '1rem', textAlign: 'center' }}>{fa.goals}</td>
                                                     <td style={{ padding: '1rem', textAlign: 'center' }}>{fa.assists}</td>
                                                     <td style={{ padding: '1rem', textAlign: 'center' }}>{fa.sog}</td>
@@ -996,6 +1094,191 @@ function App() {
                         )}
 
 
+
+                        {activeTab === 'salaries' && (
+                            <>
+                                <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                        <h2 style={{ fontSize: '2rem', margin: 0 }}>Salary Management</h2>
+                                        <p style={{ color: 'var(--text-secondary)' }}>Manage player contracts and salaries</p>
+                                    </div>
+                                    <button
+                                        className="btn"
+                                        onClick={() => setIsAddModalOpen(true)}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                                    >
+                                        <Plus size={18} /> Add Player
+                                    </button>
+                                </header>
+
+                                <div className="card" style={{ padding: '1rem', marginBottom: '2rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'rgba(255,255,255,0.05)', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                        <Search size={20} color="var(--text-secondary)" />
+                                        <input
+                                            type="text"
+                                            placeholder="Search players..."
+                                            value={salarySearch}
+                                            onChange={(e) => setSalarySearch(e.target.value)}
+                                            style={{ background: 'transparent', border: 'none', color: 'white', flexGrow: 1, outline: 'none' }}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="card" style={{ padding: '0.5rem', overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                                        <thead>
+                                            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                                                <th style={{ padding: '1rem' }}>Player</th>
+                                                <th style={{ padding: '1rem' }}>Team</th>
+                                                <th style={{ padding: '1rem' }}>Position</th>
+                                                <th style={{ padding: '1rem', textAlign: 'right' }}>Salary</th>
+                                                <th style={{ padding: '1rem', textAlign: 'center' }}>Years Left</th>
+                                                <th style={{ padding: '1rem', textAlign: 'center' }}>Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {salaries.filter(p => p.fullName.toLowerCase().includes(salarySearch.toLowerCase())).map(p => (
+                                                <tr key={p.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                                                    <td style={{ padding: '1rem', fontWeight: '600' }}>{p.fullName}</td>
+                                                    <td style={{ padding: '1rem', color: 'var(--text-secondary)' }}>{p.proTeam}</td>
+                                                    <td style={{ padding: '1rem' }}>{p.position}</td>
+                                                    <td style={{ padding: '1rem', textAlign: 'right', fontFamily: 'monospace', color: 'var(--accent-primary)' }}>
+                                                        {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(p.salary_value || 0)}
+                                                    </td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>
+                                                        {p.contract_years || '0'}
+                                                    </td>
+                                                    <td style={{ padding: '1rem', textAlign: 'center' }}>
+                                                        <button
+                                                            onClick={() => {
+                                                                setCurrentEditPlayer({ ...p });
+                                                                setIsEditModalOpen(true);
+                                                            }}
+                                                            style={{
+                                                                background: 'transparent',
+                                                                border: '1px solid rgba(255,255,255,0.1)',
+                                                                color: 'var(--text-secondary)',
+                                                                padding: '0.3rem 0.6rem',
+                                                                borderRadius: '0.3rem',
+                                                                cursor: 'pointer'
+                                                            }}
+                                                        >
+                                                            Edit
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                {/* Edit Modal */}
+                                {isEditModalOpen && currentEditPlayer && (
+                                    <div style={{
+                                        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                                        background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000
+                                    }}>
+                                        <div className="card" style={{ width: '400px', padding: '2rem' }}>
+                                            <h3 style={{ marginTop: 0 }}>Edit Salary</h3>
+                                            <div style={{ marginBottom: '1rem' }}>
+                                                <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Player</div>
+                                                <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>{currentEditPlayer.fullName}</div>
+                                            </div>
+                                            <div style={{ marginBottom: '1rem' }}>
+                                                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Salary (e.g. $5,000,000)</label>
+                                                <input
+                                                    type="text"
+                                                    value={currentEditPlayer.salary}
+                                                    onChange={(e) => setCurrentEditPlayer({ ...currentEditPlayer, salary: e.target.value })}
+                                                    style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                />
+                                            </div>
+                                            <div style={{ marginBottom: '2rem' }}>
+                                                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Years Left</label>
+                                                <input
+                                                    type="text"
+                                                    value={currentEditPlayer.contract_years}
+                                                    onChange={(e) => setCurrentEditPlayer({ ...currentEditPlayer, contract_years: e.target.value })}
+                                                    style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                />
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+                                                <button className="btn" style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)' }} onClick={() => setIsEditModalOpen(false)}>Cancel</button>
+                                                <button className="btn" onClick={handleUpdateSalary}>Save Changes</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Add Player Modal */}
+                                {isAddModalOpen && (
+                                    <div style={{
+                                        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                                        background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000
+                                    }}>
+                                        <div className="card" style={{ width: '400px', padding: '2rem' }}>
+                                            <h3 style={{ marginTop: 0 }}>Add New Player</h3>
+                                            <div style={{ display: 'grid', gap: '1rem' }}>
+                                                <div>
+                                                    <label style={{ display: 'block', marginBottom: '0.3rem', fontSize: '0.8rem' }}>Full Name</label>
+                                                    <input
+                                                        type="text"
+                                                        value={newPlayer.fullName}
+                                                        onChange={(e) => setNewPlayer({ ...newPlayer, fullName: e.target.value })}
+                                                        style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                    />
+                                                </div>
+                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                                    <div>
+                                                        <label style={{ display: 'block', marginBottom: '0.3rem', fontSize: '0.8rem' }}>Team</label>
+                                                        <input
+                                                            type="text"
+                                                            value={newPlayer.team}
+                                                            onChange={(e) => setNewPlayer({ ...newPlayer, team: e.target.value })}
+                                                            style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label style={{ display: 'block', marginBottom: '0.3rem', fontSize: '0.8rem' }}>Position</label>
+                                                        <select
+                                                            value={newPlayer.position}
+                                                            onChange={(e) => setNewPlayer({ ...newPlayer, position: e.target.value })}
+                                                            style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                        >
+                                                            <option value="F">Forward</option>
+                                                            <option value="D">Defense</option>
+                                                            <option value="G">Goalie</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label style={{ display: 'block', marginBottom: '0.3rem', fontSize: '0.8rem' }}>Salary</label>
+                                                    <input
+                                                        type="text"
+                                                        value={newPlayer.salary}
+                                                        onChange={(e) => setNewPlayer({ ...newPlayer, salary: e.target.value })}
+                                                        style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label style={{ display: 'block', marginBottom: '0.3rem', fontSize: '0.8rem' }}>Years Left</label>
+                                                    <input
+                                                        type="text"
+                                                        value={newPlayer.contract_years}
+                                                        onChange={(e) => setNewPlayer({ ...newPlayer, contract_years: e.target.value })}
+                                                        style={{ width: '100%', background: '#0f172a', border: '1px solid #334155', padding: '0.5rem', color: 'white', borderRadius: '0.4rem' }}
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+                                                <button className="btn" style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)' }} onClick={() => setIsAddModalOpen(false)}>Cancel</button>
+                                                <button className="btn" onClick={handleCreatePlayer}>Create Player</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        )}
 
                         {activeTab === 'settings' && (
                             <>
@@ -1059,6 +1342,7 @@ function App() {
                                             Force Salary Sync
                                         </button>
                                     </div>
+
                                 </div>
 
                                 <h3 style={{ marginBottom: '1rem' }}>Scoring Rules</h3>
@@ -1075,6 +1359,108 @@ function App() {
                     </div>
                 )}
             </main>
+
+            {/* Compare Modal */}
+            {isCompareModalOpen && comparePlayer && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000,
+                    backdropFilter: 'blur(8px)'
+                }}>
+                    <div className="card" style={{ width: '900px', maxWidth: '95vw', maxHeight: '90vh', padding: '2.5rem', overflowY: 'auto', position: 'relative', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
+                        <button
+                            onClick={() => setIsCompareModalOpen(false)}
+                            style={{ position: 'absolute', top: '1.5rem', right: '1.5rem', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        >
+                            <X size={24} />
+                        </button>
+
+                        <header style={{ marginBottom: '2.5rem', textAlign: 'center' }}>
+                            <h2 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>Player Comparison</h2>
+                            <p style={{ color: 'var(--text-secondary)' }}>Comparing <span style={{ color: 'var(--accent-primary)', fontWeight: 'bold' }}>{comparePlayer.fullName}</span> with top available {comparePlayer.position}s</p>
+                        </header>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem' }}>
+                            {/* Selected Player Card */}
+                            <div className="card" style={{ background: 'rgba(56, 189, 248, 0.05)', border: '1px solid rgba(56, 189, 248, 0.2)', height: 'fit-content' }}>
+                                <div style={{ padding: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                                    <h3 style={{ margin: 0, color: 'var(--accent-primary)' }}>{comparePlayer.fullName}</h3>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{comparePlayer.proTeam} • {comparePlayer.position}</div>
+                                </div>
+                                <div style={{ padding: '1.5rem' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                                        <span style={{ color: 'var(--text-secondary)' }}>Total Points</span>
+                                        <span style={{ fontWeight: 'bold' }}>{(comparePlayer.total_points || 0).toFixed(1)}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+                                        <span style={{ color: 'var(--text-secondary)' }}>Salary</span>
+                                        <span style={{ fontWeight: 'bold', color: 'var(--accent-primary)' }}>{comparePlayer.salary || 'N/A'}</span>
+                                    </div>
+
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.8rem' }}>
+                                        <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.5rem', borderRadius: '0.4rem' }}>
+                                            <div style={{ color: 'var(--text-secondary)' }}>G / A</div>
+                                            <div>{comparePlayer.goals} / {comparePlayer.assists}</div>
+                                        </div>
+                                        <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.5rem', borderRadius: '0.4rem' }}>
+                                            <div style={{ color: 'var(--text-secondary)' }}>SOG / BLK</div>
+                                            <div>{comparePlayer.sog} / {comparePlayer.blocks}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Comparison Table */}
+                            <div>
+                                <h3 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <Users size={20} color="var(--accent-secondary)" /> Top Available Free Agents
+                                </h3>
+                                <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
+                                        <thead>
+                                            <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                                                <th style={{ padding: '1rem' }}>Free Agent</th>
+                                                <th style={{ padding: '1rem', textAlign: 'center' }}>Salary</th>
+                                                <th style={{ padding: '1rem', textAlign: 'center' }}>FPts</th>
+                                                <th style={{ padding: '1rem', textAlign: 'right' }}>Diff</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(freeAgents || [])
+                                                .filter(fa => fa.position === comparePlayer.position)
+                                                .sort((a, b) => (b.total_points || 0) - (a.total_points || 0))
+                                                .slice(0, 8)
+                                                .map(fa => {
+                                                    const ptsDiff = (fa.total_points || 0) - (comparePlayer.total_points || 0);
+                                                    const isPositive = ptsDiff > 0;
+                                                    return (
+                                                        <tr key={fa.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                                                            <td style={{ padding: '1rem' }}>
+                                                                <div style={{ fontWeight: '600' }}>{fa.fullName}</div>
+                                                                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{fa.proTeam}</div>
+                                                            </td>
+                                                            <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--accent-secondary)' }}>
+                                                                {fa.salary ? (
+                                                                    fa.salary_value ? `$${(fa.salary_value / 1000000).toFixed(2)}M` : fa.salary
+                                                                ) : 'N/A'}
+                                                            </td>
+                                                            <td style={{ padding: '1rem', textAlign: 'center', fontWeight: 'bold' }}>
+                                                                {(fa.total_points || 0).toFixed(1)}
+                                                            </td>
+                                                            <td style={{ padding: '1rem', textAlign: 'right', color: isPositive ? 'var(--success)' : '#ef4444', fontWeight: 'bold' }}>
+                                                                {isPositive ? '+' : ''}{ptsDiff.toFixed(1)}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <style>{`
                 .spin { animation: spin 1s linear infinite; }

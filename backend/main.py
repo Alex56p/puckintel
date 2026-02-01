@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text, func
 from apscheduler.schedulers.background import BackgroundScheduler
 import uvicorn
 import logging
@@ -14,6 +15,7 @@ from database import engine, get_db, Base
 import models
 from fantasy_client import FantasyClient
 from scrapers import fetch_cbs_injuries
+import sync_csv
 
 app = FastAPI(title="Fantasy NHL Pool Manager")
 
@@ -157,11 +159,11 @@ LEAGUE_SETTINGS = {
 
 def sync_salaries():
     """Wrapper for salary sync using app engine"""
-    from sync_puckpedia import sync as run_salary_sync
-    logger.info("Starting salary sync...")
+    # from sync_puckpedia import sync as run_salary_sync
+    logger.info("Starting salary sync... (DISABLED/LEGACY)")
     try:
-        run_salary_sync(existing_engine=engine)
-        logger.info("Salary sync completed.")
+        # run_salary_sync(existing_engine=engine)
+        logger.info("Salary sync is now manual via CSV upload or UI.")
     except Exception as e:
         logger.error(f"Salary sync failed: {e}")
 
@@ -243,8 +245,21 @@ def sync_data():
             t_snap.points = db_team.points
 
             # Sync Team Roster
+            current_roster_ids = []
             for player in team.roster:
                 _upsert_player(db, player, scoring_map, injury_map, ownership_map, team_id=team.team_id)
+                current_roster_ids.append(player.playerId)
+            
+            # Identify and Handle Dropped Players
+            # Find players in DB that are assigned to this team but NOT in the current roster
+            dropped_players = db.query(models.Player).filter(
+                models.Player.team_id == team.team_id,
+                models.Player.id.notin_(current_roster_ids)
+            ).all()
+            
+            for dropped in dropped_players:
+                logger.info(f"Player {dropped.fullName} ({dropped.id}) dropped from Team {team.team_id}")
+                dropped.team_id = None
 
         # Sync Free Agents (Top 50)
         fas = fantasy_client.get_free_agents(size=50)
@@ -298,6 +313,25 @@ def get_team_players_history(team_id: int, stat: str = "total_points", db: Sessi
         history_dict[s.day][p_name] = val
 
     return sorted(list(history_dict.values()), key=lambda x: x['day'])
+
+
+@app.get("/api/players/salaries")
+def get_players_salaries(db: Session = Depends(get_db)):
+    # Return lightweight list with salary info
+    players = db.query(models.Player).order_by(models.Player.salary_value.desc()).all()
+    result = []
+    for p in players:
+        result.append({
+            "id": p.id,
+            "fullName": p.fullName,
+            "proTeam": p.proTeam,
+            "position": p.position,
+            "salary": p.salary,
+            "salary_value": p.salary_value,
+            "contract_years": p.contract_years,
+            "total_points": p.total_points
+        })
+    return result
 
 @app.get("/api/players/free_agents")
 def get_free_agents(db: Session = Depends(get_db)):
@@ -358,6 +392,84 @@ def update_settings(settings: SettingsUpdate):
         logger.error(f"Failed to reschedule job: {e}")
         
     return {"message": "Settings updated", "settings": LEAGUE_SETTINGS}
+
+@app.post("/api/settings/upload_salaries")
+async def upload_salaries(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    # Decode bytes to string
+    try:
+        content_str = content.decode('utf-8')
+    except UnicodeDecodeError:
+        content_str = content.decode('latin-1') # Fallback
+        
+    count = sync_csv.process_csv_content(content_str, db)
+    return {"message": f"Successfully updated salaries for {count} players"}
+
+class SalaryUpdate(BaseModel):
+    salary: str # allow string input like "$5,000,000" or raw number
+    contract_years: str
+
+@app.put("/api/players/{player_id}/salary")
+def update_player_salary(player_id: int, update: SalaryUpdate, db: Session = Depends(get_db)):
+    player = db.query(models.Player).filter(models.Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    player.salary = update.salary
+    player.contract_years = update.contract_years
+    
+    # Clean salary value
+    try:
+        clean = update.salary.replace("$", "").replace(",", "").strip()
+        player.salary_value = float(clean)
+    except:
+        player.salary_value = 0.0
+        
+    db.commit()
+    return {"message": "Salary updated", "player": player}
+
+class PlayerCreate(BaseModel):
+    fullName: str
+    team: str
+    position: str
+    salary: str
+    contract_years: str
+
+@app.post("/api/players")
+def create_player(p: PlayerCreate, db: Session = Depends(get_db)):
+    # Check if exists by name
+    existing = db.query(models.Player).filter(models.Player.fullName.ilike(p.fullName)).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Player already exists")
+    
+    # Generate ID: Max ID + 1
+    # Note: ESPN IDs are usually 6-7 digits. We should pick a range that doesn't conflict or just Max+1
+    max_id = db.query(func.max(models.Player.id)).scalar()
+    new_id = (max_id or 10000) + 1
+    
+    salary_val = 0.0
+    try:
+        clean = p.salary.replace("$", "").replace(",", "").strip()
+        salary_val = float(clean)
+    except:
+        pass
+        
+    new_player = models.Player(
+        id=new_id,
+        fullName=p.fullName,
+        proTeam=p.team,
+        position=p.position,
+        salary=p.salary,
+        salary_value=salary_val,
+        contract_years=p.contract_years,
+        status="ACTIVE", # Default
+        total_points=0.0
+    )
+    
+    db.add(new_player)
+    db.commit()
+    db.refresh(new_player)
+    return new_player
 
 @app.post("/api/sync/salaries")
 def trigger_salary_sync():
