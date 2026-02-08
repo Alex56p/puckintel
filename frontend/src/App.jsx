@@ -1345,6 +1345,46 @@ function App() {
 
                                 </div>
 
+                                <div className="card" style={{ padding: '2rem', marginBottom: '2rem' }}>
+                                    <h3 style={{ marginTop: 0, marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <Upload size={20} /> Manual Data Import
+                                    </h3>
+                                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+                                        Upload a CSV file to bulk update player salaries. Expected columns: <b>Full Name, Team, Cap Hit, Years Left</b>.
+                                    </p>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                        <input
+                                            type="file"
+                                            id="csv-upload"
+                                            hidden
+                                            accept=".csv"
+                                            onChange={(e) => setUploadFile(e.target.files[0])}
+                                        />
+                                        <button
+                                            className="btn"
+                                            style={{ background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                                            onClick={() => document.getElementById('csv-upload').click()}
+                                        >
+                                            <Search size={16} /> {uploadFile ? 'Change File' : 'Select CSV File'}
+                                        </button>
+                                        {uploadFile && (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                                <span style={{ fontSize: '0.9rem', color: 'var(--accent-primary)', fontWeight: '500' }}>
+                                                    {uploadFile.name}
+                                                </span>
+                                                <button
+                                                    className="btn"
+                                                    onClick={handleUploadSalaries}
+                                                    disabled={syncing}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                                                >
+                                                    <Upload size={16} /> {syncing ? 'Uploading...' : 'Upload and Process'}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
                                 <h3 style={{ marginBottom: '1rem' }}>Scoring Rules</h3>
                                 <div className="card" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '1.5rem' }}>
                                     {Object.entries(scoringRules).map(([stat, pts]) => (
